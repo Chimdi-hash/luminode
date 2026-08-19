@@ -110,14 +110,24 @@ class ParametricFlightInsurance(gl.Contract):
             (100 requests/month on the free plan - sufficient for testnet).
         """
         self.api_key   = ""
-        self.owner     = gl.message.sender_address
+        self.owner     = self._get_sender()
 
     # - Internal helpers -
+
+    def _get_sender(self) -> str:
+        addr = gl.message.sender_address
+        if isinstance(addr, str):
+            return addr
+        candidate = getattr(addr, "as_hex", None)
+        res = candidate() if callable(candidate) else candidate
+        if isinstance(res, str):
+            return res
+        return str(addr)
 
     @gl.public.write
     def set_api_key(self, api_key: str) -> None:
         """Set the AviationStack API key (Owner only)."""
-        if gl.message.sender_address != self.owner:
+        if self._get_sender() != self.owner:
             raise gl.vm.UserError("Only the owner can set the API key")
         self.api_key = api_key
 
@@ -230,7 +240,7 @@ class ParametricFlightInsurance(gl.Contract):
         policy_id = self._next_policy_id()
         self.policies[policy_id] = json.dumps({
             "policy_id"               : policy_id,
-            "policyholder"            : gl.message.sender_address,
+            "policyholder"            : self._get_sender(),
             "flight_iata"             : flight_iata.upper().strip(),
             "flight_date"             : flight_date,
             "delay_threshold_minutes" : delay_threshold_minutes,
@@ -260,7 +270,7 @@ class ParametricFlightInsurance(gl.Contract):
 
         policy = json.loads(self.policies[policy_id])
 
-        if policy["policyholder"] != gl.message.sender_address:
+        if policy["policyholder"] != self._get_sender():
             raise gl.vm.UserError(
                 f"{ERR_EXPECTED} Only the policyholder can file a claim on '{policy_id}'"
             )
@@ -274,7 +284,7 @@ class ParametricFlightInsurance(gl.Contract):
         self.claims[claim_id] = json.dumps({
             "claim_id"               : claim_id,
             "policy_id"              : policy_id,
-            "claimant"               : gl.message.sender_address,
+            "claimant"               : self._get_sender(),
             "state"                  : CLAIM_PENDING,
             "actual_delay_minutes"   : -1,
             "verdict_reasoning"      : "",
