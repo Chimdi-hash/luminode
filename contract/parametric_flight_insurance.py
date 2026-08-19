@@ -88,18 +88,18 @@ class ParametricFlightInsurance(gl.Contract):
     claims    : dict[claim_id  - claim_record]
     api_key   : str   (AviationStack access_key, set at deployment)
     owner     : str   (deployer address)
-    _next_id  : int   (monotonic ID counter)
+    next_id  : int   (monotonic ID counter)
     """
 
     policies : TreeMap[str, str]
     claims   : TreeMap[str, str]
     api_key  : str
     owner    : str
-    _next_id : u256
+    next_id : u256
 
     # - Constructor -
 
-    def __init__(self) -> None:
+    def __init__(self):
         """
         Deploy the insurance contract.
 
@@ -115,7 +115,7 @@ class ParametricFlightInsurance(gl.Contract):
     # - Internal helpers -
 
     def _get_sender(self) -> str:
-        addr = gl.message.sender_address
+        addr = self._get_sender()
         if isinstance(addr, str):
             return addr
         candidate = getattr(addr, "as_hex", None)
@@ -132,13 +132,13 @@ class ParametricFlightInsurance(gl.Contract):
         self.api_key = api_key
 
     def _next_policy_id(self) -> str:
-        pid = f"POL-{int(self._next_id):05d}"
-        self._next_id = u256(int(self._next_id) + 1)
+        pid = f"POL-{int(self.next_id):05d}"
+        self.next_id = u256(int(self.next_id) + 1)
         return pid
 
     def _next_claim_id(self) -> str:
-        cid = f"CLM-{int(self._next_id):05d}"
-        self._next_id = u256(int(self._next_id) + 1)
+        cid = f"CLM-{int(self.next_id):05d}"
+        self.next_id = u256(int(self.next_id) + 1)
         return cid
 
     def _fetch_flight_data(self, flight_iata: str, flight_date: str) -> dict:
