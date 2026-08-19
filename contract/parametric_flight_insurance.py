@@ -1,29 +1,29 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
-# ─────────────────────────────────────────────────────────────────────────────
-# ParametricFlightInsurance — GenLayer Intelligent Contract
+# -
+# ParametricFlightInsurance - GenLayer Intelligent Contract
 #
 # Automatically settles flight-delay insurance claims using:
-#   • Live flight data fetched from the AviationStack API
-#   • Comparative Equivalence Principle — validators independently fetch the
+#   - Live flight data fetched from the AviationStack API
+#   - Comparative Equivalence Principle - validators independently fetch the
 #     same flight data and must agree on the delay value (within 5-min margin)
 #     AND on the approval decision before consensus is reached
-#   • Grounded LLM reasoning — verified delay figures injected as ground truth;
+#   - Grounded LLM reasoning - verified delay figures injected as ground truth;
 #     LLM handles only policy-term interpretation and edge-case detection
 #
 # Author: U_StackLabs
-# ─────────────────────────────────────────────────────────────────────────────
+# -
 
 import genlayer as gl
 from genlayer import *
 import json
 
-# ── Error classification prefixes ────────────────────────────────────────────
+# - Error classification prefixes -
 # [EXPECTED] = deterministic business-logic errors (fail consistently on all nodes)
 # [EXTERNAL] = transient external-service failures (safe to retry)
 ERR_EXPECTED = "[EXPECTED]"
 ERR_EXTERNAL = "[EXTERNAL]"
 
-# ── Policy / Claim lifecycle states ──────────────────────────────────────────
+# - Policy / Claim lifecycle states -
 POLICY_ACTIVE   = "active"
 POLICY_CLAIMED  = "claimed"
 POLICY_SETTLED  = "settled"
@@ -36,16 +36,16 @@ CLAIM_REJECTED = "rejected"
 
 class ParametricFlightInsurance(gl.Contract):
     """
-    Parametric Flight Delay Insurance — GenLayer Intelligent Contract
-    ═══════════════════════════════════════════════════════════════════
+    Parametric Flight Delay Insurance - GenLayer Intelligent Contract
+    -
 
     HOW IT WORKS
-    ────────────
+    -
     1. A *policyholder* calls purchase_policy(), specifying:
-         • IATA flight code  (e.g. "BA456")
-         • Flight date       (e.g. "2025-03-15")
-         • Delay threshold   (e.g. 120 minutes)
-         • Payout amount     (stored in wei equivalent units)
+         - IATA flight code  (e.g. "BA456")
+         - Flight date       (e.g. "2025-03-15")
+         - Delay threshold   (e.g. 120 minutes)
+         - Payout amount     (stored in wei equivalent units)
 
     2. After the flight lands the policyholder calls file_claim() to
        register a pending claim against their active policy.
@@ -54,17 +54,17 @@ class ParametricFlightInsurance(gl.Contract):
        the core non-deterministic step:
 
          Leader validator
-           └─ fetches live flight data from AviationStack API
-           └─ extracts STABLE fields only (delay in minutes, flight_status)
-           └─ injects numeric delay as GROUND TRUTH into LLM prompt
-           └─ LLM handles edge cases: cancellations, diversions, policy terms
-           └─ returns structured JSON: {approved, canonical_delay_minutes, ...}
+           - fetches live flight data from AviationStack API
+           - extracts STABLE fields only (delay in minutes, flight_status)
+           - injects numeric delay as GROUND TRUTH into LLM prompt
+           - LLM handles edge cases: cancellations, diversions, policy terms
+           - returns structured JSON: {approved, canonical_delay_minutes, ...}
 
          Each consensus validator
-           └─ independently fetches the same AviationStack endpoint
-           └─ compares delay value with leader's (must be within 5-min margin)
-           └─ confirms approval decision matches leader's verdict
-           └─ returns True / False
+           - independently fetches the same AviationStack endpoint
+           - compares delay value with leader's (must be within 5-min margin)
+           - confirms approval decision matches leader's verdict
+           - returns True / False
 
        This implements the *Comparative Equivalence Principle*: validators
        re-execute the leader's work and compare quantitative outputs within an
@@ -75,17 +75,17 @@ class ParametricFlightInsurance(gl.Contract):
        production deployment (stub left for clarity in this reference impl).
 
     EQUIVALENCE PRINCIPLE USED
-    ──────────────────────────
-    Comparative — validators replicate the leader's data fetch and compare
+    -
+    Comparative - validators replicate the leader's data fetch and compare
     numerical delay figures within a 5-minute margin of error, then confirm
     the boolean approval decision matches.  This is appropriate for
     quantifiable outputs (minutes of delay) with natural measurement variance
     across independent API calls made at slightly different times.
 
     STATE SCHEMA
-    ────────────
-    policies  : dict[policy_id → policy_record]
-    claims    : dict[claim_id  → claim_record]
+    -
+    policies  : dict[policy_id - policy_record]
+    claims    : dict[claim_id  - claim_record]
     api_key   : str   (AviationStack access_key, set at deployment)
     owner     : str   (deployer address)
     _next_id  : int   (monotonic ID counter)
@@ -97,9 +97,9 @@ class ParametricFlightInsurance(gl.Contract):
     owner    : str
     _next_id : u256
 
-    # ── Constructor ──────────────────────────────────────────────────────────
+    # - Constructor -
 
-    def __init__(self, aviationstack_api_key: str) -> None:
+    def __init__(self) -> None:
         """
         Deploy the insurance contract.
 
@@ -107,12 +107,19 @@ class ParametricFlightInsurance(gl.Contract):
         ----------
         aviationstack_api_key : str
             Free-tier key from https://aviationstack.com/
-            (100 requests/month on the free plan — sufficient for testnet).
+            (100 requests/month on the free plan - sufficient for testnet).
         """
-        self.api_key   = aviationstack_api_key
+        self.api_key   = ""
         self.owner     = gl.message.sender_address
 
-    # ── Internal helpers ─────────────────────────────────────────────────────
+    # - Internal helpers -
+
+    @gl.public.write
+    def set_api_key(self, api_key: str) -> None:
+        """Set the AviationStack API key (Owner only)."""
+        if gl.message.sender_address != self.owner:
+            raise gl.vm.UserError("Only the owner can set the API key")
+        self.api_key = api_key
 
     def _next_policy_id(self) -> str:
         pid = f"POL-{int(self._next_id):05d}"
@@ -185,7 +192,7 @@ class ParametricFlightInsurance(gl.Contract):
             "canonical_delay_minutes"  : canonical,
         }
 
-    # ── Write: purchase a policy ─────────────────────────────────────────────
+    # - Write: purchase a policy -
 
     @gl.public.write
     def purchase_policy(
@@ -233,7 +240,7 @@ class ParametricFlightInsurance(gl.Contract):
         })
         return policy_id
 
-    # ── Write: file a claim ──────────────────────────────────────────────────
+    # - Write: file a claim -
 
     @gl.public.write
     def file_claim(self, policy_id: str) -> str:
@@ -280,22 +287,22 @@ class ParametricFlightInsurance(gl.Contract):
         self.policies[policy_id] = json.dumps(policy)
         return claim_id
 
-    # ── Write: settle a claim (core non-deterministic method) ────────────────
+    # - Write: settle a claim (core non-deterministic method) -
 
     @gl.public.write
     def settle_claim(self, claim_id: str) -> None:
         """
         Settle a pending claim using AI-validator consensus.
 
-        ═══════════════════════════════════════════════════════
-        CONSENSUS DESIGN — Comparative Equivalence Principle
-        ═══════════════════════════════════════════════════════
+        -
+        CONSENSUS DESIGN - Comparative Equivalence Principle
+        -
 
         LEADER
           1. Fetches live flight data from AviationStack API
           2. Extracts stable fields: departure_delay, arrival_delay, status
           3. Derives canonical_delay_minutes (arrival delay preferred)
-          4. Programmatic check: canonical_delay >= threshold → approved?
+          4. Programmatic check: canonical_delay >= threshold - approved?
           5. Injects numeric delay as GROUND TRUTH into LLM prompt
           6. LLM interprets policy edge cases (cancellation vs. delay,
              diversions, etc.) and produces final JSON verdict
@@ -305,19 +312,19 @@ class ParametricFlightInsurance(gl.Contract):
           1. Independently fetches the same AviationStack endpoint
           2. Derives its own canonical_delay_minutes
           3. Accepts leader's result if BOTH conditions hold:
-             (a) |validator_delay - leader_delay| ≤ 5 minutes   ← quantitative
-             (b) validator's programmatic approval == leader's   ← decision
+             (a) |validator_delay - leader_delay| - 5 minutes   - quantitative
+             (b) validator's programmatic approval == leader's   - decision
           4. Returns True (accept) or False (reject)
 
         This is a Comparative Equivalence Principle implementation:
         validators replicate the leader's computation and compare
         quantifiable outputs within a tolerance that accounts for
         natural API response variance between independent calls.
-        ═══════════════════════════════════════════════════════
+        -
 
         Parameters
         ----------
-        claim_id : str — a pending claim ID returned by file_claim()
+        claim_id : str - a pending claim ID returned by file_claim()
 
         Callable by anyone (not just the policyholder) to allow
         third-party settlement triggers in production workflows.
@@ -338,18 +345,18 @@ class ParametricFlightInsurance(gl.Contract):
         date      = policy["flight_date"]
         threshold = policy["delay_threshold_minutes"]
 
-        # ── Leader function ──────────────────────────────────────────────────
+        # - Leader function -
         def leader_fn():
-            # Step 1 — Fetch live data (non-deterministic web access)
+            # Step 1 - Fetch live data (non-deterministic web access)
             flight_data = self._fetch_flight_data(flight, date)
 
             canonical_delay = flight_data["canonical_delay_minutes"]
             flight_status   = flight_data["flight_status"]
 
-            # Step 2 — Programmatic ground-truth check
+            # Step 2 - Programmatic ground-truth check
             programmatic_approved = (canonical_delay >= threshold)
 
-            # Step 3 — LLM handles policy-term interpretation & edge cases
+            # Step 3 - LLM handles policy-term interpretation & edge cases
             # Numeric facts are injected as GROUND TRUTH so the LLM cannot
             # hallucinate or override the delay calculation.
             prompt = f"""
@@ -358,24 +365,24 @@ You are a senior claims adjudicator for parametric flight-delay insurance.
 POLICY TERMS
   Flight       : {flight}
   Date         : {date}
-  Payout trigger: Arrival delay ≥ {threshold} minutes
+  Payout trigger: Arrival delay - {threshold} minutes
 
-VERIFIED FLIGHT DATA  ← injected from live aviation API, treat as GROUND TRUTH
+VERIFIED FLIGHT DATA  - injected from live aviation API, treat as GROUND TRUTH
   Flight status              : {flight_status}
   Departure delay (minutes)  : {flight_data['departure_delay_minutes']}
   Arrival delay   (minutes)  : {flight_data['arrival_delay_minutes']}
   Canonical delay used        : {canonical_delay} minutes
 
-PROGRAMMATIC VERDICT  ← computed by code, DO NOT override
+PROGRAMMATIC VERDICT  - computed by code, DO NOT override
   Delay meets threshold: {programmatic_approved}
 
 YOUR TASK
-  1. Honour the programmatic verdict — do NOT change approved/rejected
+  1. Honour the programmatic verdict - do NOT change approved/rejected
      based on your own delay calculation.
   2. Identify any edge cases:
-       • "cancelled" flight → different claim type, note as edge case
-       • "diverted" flight  → typically a covered delay, note it
-       • "scheduled" status → flight has not yet landed, claim premature
+       - "cancelled" flight - different claim type, note as edge case
+       - "diverted" flight  - typically a covered delay, note it
+       - "scheduled" status - flight has not yet landed, claim premature
   3. Write a 1-2 sentence plain-English reasoning for the claimant.
 
 Respond ONLY as valid JSON (no markdown fences):
@@ -399,7 +406,7 @@ Respond ONLY as valid JSON (no markdown fences):
                 "edge_case_detected"      : llm_verdict.get("edge_case_detected", "none"),
             }
 
-        # ── Validator function ───────────────────────────────────────────────
+        # - Validator function -
         def validator_fn(leaders_res) -> bool:
             if not isinstance(leaders_res, gl.vm.Return):
                 return False
@@ -408,7 +415,7 @@ Respond ONLY as valid JSON (no markdown fences):
             leader_delay  = leader_data.get("canonical_delay_minutes", -1)
             leader_ok     = leader_data.get("approved", False)
 
-            # Independently fetch — may differ slightly due to API call timing
+            # Independently fetch - may differ slightly due to API call timing
             try:
                 my_data  = self._fetch_flight_data(flight, date)
             except Exception:
@@ -418,7 +425,7 @@ Respond ONLY as valid JSON (no markdown fences):
             my_delay = my_data["canonical_delay_minutes"]
             my_ok    = (my_delay >= threshold)
 
-            # ── Comparative Equivalence Principle checks ──────────────────
+            # - Comparative Equivalence Principle checks -
             # (a) Quantitative: delay values must agree within 5-min margin.
             #     5 minutes chosen because AviationStack updates in ~1-min
             #     increments and two independent calls can straddle an update.
@@ -426,7 +433,7 @@ Respond ONLY as valid JSON (no markdown fences):
 
             # (b) Decision: both validators must reach the same approve/reject.
             #     If the delay is near the threshold (within 5 min), the
-            #     decision *may* legitimately differ — in that case we defer
+            #     decision *may* legitimately differ - in that case we defer
             #     to the leader (return True) to avoid a liveness failure on
             #     borderline cases.
             near_threshold = abs(my_delay - threshold) <= 5
@@ -434,10 +441,10 @@ Respond ONLY as valid JSON (no markdown fences):
 
             return delay_agrees and decision_agrees
 
-        # ── Run consensus ────────────────────────────────────────────────────
-        result = gl.vm.run_nondet(leader_fn, validator_fn)
+        # - Run consensus -
+        result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
-        # ── Persist outcome ──────────────────────────────────────────────────
+        # - Persist outcome -
         approved = result.get("approved", False)
 
         claim["actual_delay_minutes"] = result.get("canonical_delay_minutes", 0)
@@ -456,7 +463,7 @@ Respond ONLY as valid JSON (no markdown fences):
         # via gl.message.send_tokens() or a ghost-contract call.  Omitted in
         # this reference implementation for clarity.
 
-    # ── View methods ─────────────────────────────────────────────────────────
+    # - View methods -
 
     @gl.public.view
     def get_policy(self, policy_id: str) -> dict:
