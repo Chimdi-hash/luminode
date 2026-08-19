@@ -33,89 +33,17 @@ CLAIM_PENDING  = "pending"
 CLAIM_APPROVED = "approved"
 CLAIM_REJECTED = "rejected"
 
-
 class ParametricFlightInsurance(gl.Contract):
-    """
-    Parametric Flight Delay Insurance - GenLayer Intelligent Contract
-    -
-
-    HOW IT WORKS
-    -
-    1. A *policyholder* calls purchase_policy(), specifying:
-         - IATA flight code  (e.g. "BA456")
-         - Flight date       (e.g. "2025-03-15")
-         - Delay threshold   (e.g. 120 minutes)
-         - Payout amount     (stored in wei equivalent units)
-
-    2. After the flight lands the policyholder calls file_claim() to
-       register a pending claim against their active policy.
-
-    3. Anyone (including the claimant) calls settle_claim().  This is
-       the core non-deterministic step:
-
-         Leader validator
-           - fetches live flight data from AviationStack API
-           - extracts STABLE fields only (delay in minutes, flight_status)
-           - injects numeric delay as GROUND TRUTH into LLM prompt
-           - LLM handles edge cases: cancellations, diversions, policy terms
-           - returns structured JSON: {approved, canonical_delay_minutes, ...}
-
-         Each consensus validator
-           - independently fetches the same AviationStack endpoint
-           - compares delay value with leader's (must be within 5-min margin)
-           - confirms approval decision matches leader's verdict
-           - returns True / False
-
-       This implements the *Comparative Equivalence Principle*: validators
-       re-execute the leader's work and compare quantitative outputs within an
-       acceptable tolerance.
-
-    4. If consensus is reached the claim/policy state updates on-chain.
-       Payout release would be wired to the ghost-contract balance in a
-       production deployment (stub left for clarity in this reference impl).
-
-    EQUIVALENCE PRINCIPLE USED
-    -
-    Comparative - validators replicate the leader's data fetch and compare
-    numerical delay figures within a 5-minute margin of error, then confirm
-    the boolean approval decision matches.  This is appropriate for
-    quantifiable outputs (minutes of delay) with natural measurement variance
-    across independent API calls made at slightly different times.
-
-    STATE SCHEMA
-    -
-    policies  : dict[policy_id - policy_record]
-    claims    : dict[claim_id  - claim_record]
-    api_key   : str   (AviationStack access_key, set at deployment)
-    owner     : str   (deployer address)
-    next_id  : int   (monotonic ID counter)
-    """
-
-    policies : TreeMap[str, str]
-    claims   : TreeMap[str, str]
-    api_key  : str
-    owner    : str
-    next_id : u256
-
-    # - Constructor -
+    policies: TreeMap[str, str]
+    claims: TreeMap[str, str]
+    config: TreeMap[str, str]
+    next_id: u256
 
     def __init__(self):
-        """
-        Deploy the insurance contract.
-
-        Parameters
-        ----------
-        aviationstack_api_key : str
-            Free-tier key from https://aviationstack.com/
-            (100 requests/month on the free plan - sufficient for testnet).
-        """
-        self.api_key   = ""
-        self.owner     = self._get_sender()
-
-    # - Internal helpers -
+        pass
 
     def _get_sender(self) -> str:
-        addr = self._get_sender()
+        addr = gl.message.sender_address
         if isinstance(addr, str):
             return addr
         candidate = getattr(addr, "as_hex", None)
@@ -126,10 +54,14 @@ class ParametricFlightInsurance(gl.Contract):
 
     @gl.public.write
     def set_api_key(self, api_key: str) -> None:
-        """Set the AviationStack API key (Owner only)."""
-        if self._get_sender() != self.owner:
+        sender = self._get_sender()
+        current_owner = self.config.get("owner", "")
+        if not current_owner:
+            current_owner = sender
+            self.config["owner"] = sender
+        if sender != current_owner:
             raise gl.vm.UserError("Only the owner can set the API key")
-        self.api_key = api_key
+        self.config["api_key"] = api_key
 
     def _next_policy_id(self) -> str:
         pid = f"POL-{int(self.next_id):05d}"
@@ -142,23 +74,10 @@ class ParametricFlightInsurance(gl.Contract):
         return cid
 
     def _fetch_flight_data(self, flight_iata: str, flight_date: str) -> dict:
-        """
-        Fetch live flight data from AviationStack and return ONLY stable fields.
-
-        Volatile fields (updated_at, timestamps, comment counts, etc.) are
-        deliberately excluded to prevent spurious consensus failures caused by
-        the natural drift between independent validator API calls.
-
-        Returns
-        -------
-        dict with keys:
-            flight_iata, flight_date, flight_status,
-            departure_delay_minutes, arrival_delay_minutes,
-            canonical_delay_minutes
-        """
+        
         url = (
             "http://api.aviationstack.com/v1/flights"
-            f"?access_key={self.api_key}"
+            f"?access_key={self.config.get("api_key", "")}"
             f"&flight_iata={flight_iata}"
             f"&flight_date={flight_date}"
             "&limit=1"
@@ -212,20 +131,7 @@ class ParametricFlightInsurance(gl.Contract):
         delay_threshold_minutes: int,
         payout_amount_wei     : int,
     ) -> str:
-        """
-        Purchase a parametric flight-delay insurance policy.
-
-        Parameters
-        ----------
-        flight_iata              : IATA flight code, e.g. "BA456"
-        flight_date              : ISO-8601 date, e.g. "2025-03-15"
-        delay_threshold_minutes  : Minimum arrival delay for payout, e.g. 120
-        payout_amount_wei        : Coverage amount in wei-equivalent units
-
-        Returns
-        -------
-        str : The newly created policy_id (e.g. "POL-00001")
-        """
+        
         if not flight_iata or len(flight_iata.strip()) < 3:
             raise gl.vm.UserError(f"{ERR_EXPECTED} Invalid IATA code: '{flight_iata}'")
         if not flight_date or len(flight_date) != 10:
@@ -254,17 +160,7 @@ class ParametricFlightInsurance(gl.Contract):
 
     @gl.public.write
     def file_claim(self, policy_id: str) -> str:
-        """
-        File a delay claim against an active policy.
-
-        Only the original policyholder may file a claim.
-        The policy moves to 'claimed' state immediately; settlement
-        is triggered separately via settle_claim().
-
-        Returns
-        -------
-        str : The newly created claim_id (e.g. "CLM-00002")
-        """
+        
         if policy_id not in self.policies:
             raise gl.vm.UserError(f"{ERR_EXPECTED} Policy '{policy_id}' does not exist")
 
@@ -301,44 +197,7 @@ class ParametricFlightInsurance(gl.Contract):
 
     @gl.public.write
     def settle_claim(self, claim_id: str) -> None:
-        """
-        Settle a pending claim using AI-validator consensus.
-
-        -
-        CONSENSUS DESIGN - Comparative Equivalence Principle
-        -
-
-        LEADER
-          1. Fetches live flight data from AviationStack API
-          2. Extracts stable fields: departure_delay, arrival_delay, status
-          3. Derives canonical_delay_minutes (arrival delay preferred)
-          4. Programmatic check: canonical_delay >= threshold - approved?
-          5. Injects numeric delay as GROUND TRUTH into LLM prompt
-          6. LLM interprets policy edge cases (cancellation vs. delay,
-             diversions, etc.) and produces final JSON verdict
-          7. Returns: {approved, canonical_delay_minutes, reasoning, ...}
-
-        VALIDATOR (for each consensus validator)
-          1. Independently fetches the same AviationStack endpoint
-          2. Derives its own canonical_delay_minutes
-          3. Accepts leader's result if BOTH conditions hold:
-             (a) |validator_delay - leader_delay| - 5 minutes   - quantitative
-             (b) validator's programmatic approval == leader's   - decision
-          4. Returns True (accept) or False (reject)
-
-        This is a Comparative Equivalence Principle implementation:
-        validators replicate the leader's computation and compare
-        quantifiable outputs within a tolerance that accounts for
-        natural API response variance between independent calls.
-        -
-
-        Parameters
-        ----------
-        claim_id : str - a pending claim ID returned by file_claim()
-
-        Callable by anyone (not just the policyholder) to allow
-        third-party settlement triggers in production workflows.
-        """
+        
         if claim_id not in self.claims:
             raise gl.vm.UserError(f"{ERR_EXPECTED} Claim '{claim_id}' does not exist")
 
@@ -369,41 +228,7 @@ class ParametricFlightInsurance(gl.Contract):
             # Step 3 - LLM handles policy-term interpretation & edge cases
             # Numeric facts are injected as GROUND TRUTH so the LLM cannot
             # hallucinate or override the delay calculation.
-            prompt = f"""
-You are a senior claims adjudicator for parametric flight-delay insurance.
-
-POLICY TERMS
-  Flight       : {flight}
-  Date         : {date}
-  Payout trigger: Arrival delay - {threshold} minutes
-
-VERIFIED FLIGHT DATA  - injected from live aviation API, treat as GROUND TRUTH
-  Flight status              : {flight_status}
-  Departure delay (minutes)  : {flight_data['departure_delay_minutes']}
-  Arrival delay   (minutes)  : {flight_data['arrival_delay_minutes']}
-  Canonical delay used        : {canonical_delay} minutes
-
-PROGRAMMATIC VERDICT  - computed by code, DO NOT override
-  Delay meets threshold: {programmatic_approved}
-
-YOUR TASK
-  1. Honour the programmatic verdict - do NOT change approved/rejected
-     based on your own delay calculation.
-  2. Identify any edge cases:
-       - "cancelled" flight - different claim type, note as edge case
-       - "diverted" flight  - typically a covered delay, note it
-       - "scheduled" status - flight has not yet landed, claim premature
-  3. Write a 1-2 sentence plain-English reasoning for the claimant.
-
-Respond ONLY as valid JSON (no markdown fences):
-{{
-  "approved"                : {str(programmatic_approved).lower()},
-  "canonical_delay_minutes" : {canonical_delay},
-  "reasoning"               : "<1-2 sentences for the claimant>",
-  "flight_status"           : "{flight_status}",
-  "edge_case_detected"      : "none" or "<brief description>"
-}}
-"""
+            prompt = f
             llm_verdict = gl.nondet.exec_prompt(prompt, response_format="json")
 
             # Safety: always use programmatic approval as source of truth;
@@ -477,26 +302,21 @@ Respond ONLY as valid JSON (no markdown fences):
 
     @gl.public.view
     def get_policy(self, policy_id: str) -> dict:
-        """Return full policy record for the given policy_id."""
+        
         if policy_id not in self.policies:
             raise gl.vm.UserError(f"{ERR_EXPECTED} Policy '{policy_id}' not found")
         return json.loads(self.policies[policy_id])
 
     @gl.public.view
     def get_claim(self, claim_id: str) -> dict:
-        """
-        Return full claim record including AI verdict and delay measurement.
-        """
+        
         if claim_id not in self.claims:
             raise gl.vm.UserError(f"{ERR_EXPECTED} Claim '{claim_id}' not found")
         return json.loads(self.claims[claim_id])
 
     @gl.public.view
     def get_policy_with_claim(self, policy_id: str) -> dict:
-        """
-        Return a policy and its associated claim (if any) in one call.
-        Useful for frontend dashboards.
-        """
+        
         if policy_id not in self.policies:
             raise gl.vm.UserError(f"{ERR_EXPECTED} Policy '{policy_id}' not found")
 
@@ -511,9 +331,7 @@ Respond ONLY as valid JSON (no markdown fences):
 
     @gl.public.view
     def list_policies_for(self, address: str) -> list:
-        """
-        Return all policy records owned by the given wallet address.
-        """
+        
         return [
             p for p in self.policies.values()
             if p["policyholder"] == address
@@ -521,9 +339,7 @@ Respond ONLY as valid JSON (no markdown fences):
 
     @gl.public.view
     def get_contract_info(self) -> dict:
-        """
-        Return high-level contract statistics.
-        """
+        
         total         = len(self.policies)
         active        = sum(1 for p in self.policies.values() if p["state"] == POLICY_ACTIVE)
         settled_count = sum(1 for p in self.policies.values() if p["state"] == POLICY_SETTLED)
