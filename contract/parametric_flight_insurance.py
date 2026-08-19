@@ -91,11 +91,11 @@ class ParametricFlightInsurance(gl.Contract):
     _next_id  : int   (monotonic ID counter)
     """
 
-    policies : dict
-    claims   : dict
+    policies : TreeMap[str, str]
+    claims   : TreeMap[str, str]
     api_key  : str
     owner    : str
-    _next_id : int
+    _next_id : u256
 
     # ── Constructor ──────────────────────────────────────────────────────────
 
@@ -109,22 +109,19 @@ class ParametricFlightInsurance(gl.Contract):
             Free-tier key from https://aviationstack.com/
             (100 requests/month on the free plan — sufficient for testnet).
         """
-        self.policies  = {}
-        self.claims    = {}
         self.api_key   = aviationstack_api_key
         self.owner     = gl.message.sender_address
-        self._next_id  = 1
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
     def _next_policy_id(self) -> str:
-        pid = f"POL-{self._next_id:05d}"
-        self._next_id += 1
+        pid = f"POL-{int(self._next_id):05d}"
+        self._next_id = u256(int(self._next_id) + 1)
         return pid
 
     def _next_claim_id(self) -> str:
-        cid = f"CLM-{self._next_id:05d}"
-        self._next_id += 1
+        cid = f"CLM-{int(self._next_id):05d}"
+        self._next_id = u256(int(self._next_id) + 1)
         return cid
 
     def _fetch_flight_data(self, flight_iata: str, flight_date: str) -> dict:
@@ -153,7 +150,7 @@ class ParametricFlightInsurance(gl.Contract):
         response = gl.nondet.web.get(url)
 
         if response.status != 200:
-            raise ValueError(
+            raise gl.vm.UserError(
                 f"{ERR_EXTERNAL} AviationStack returned HTTP {response.status} "
                 f"for flight {flight_iata} on {flight_date}"
             )
@@ -161,7 +158,7 @@ class ParametricFlightInsurance(gl.Contract):
         raw = json.loads(response.body.decode("utf-8"))
 
         if not raw.get("data"):
-            raise ValueError(
+            raise gl.vm.UserError(
                 f"{ERR_EXTERNAL} No flight records returned for "
                 f"{flight_iata} on {flight_date}. "
                 "Flight may not have operated or date is too far in the future."
@@ -213,18 +210,18 @@ class ParametricFlightInsurance(gl.Contract):
         str : The newly created policy_id (e.g. "POL-00001")
         """
         if not flight_iata or len(flight_iata.strip()) < 3:
-            raise ValueError(f"{ERR_EXPECTED} Invalid IATA code: '{flight_iata}'")
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Invalid IATA code: '{flight_iata}'")
         if not flight_date or len(flight_date) != 10:
-            raise ValueError(f"{ERR_EXPECTED} flight_date must be YYYY-MM-DD, got '{flight_date}'")
+            raise gl.vm.UserError(f"{ERR_EXPECTED} flight_date must be YYYY-MM-DD, got '{flight_date}'")
         if delay_threshold_minutes < 30:
-            raise ValueError(f"{ERR_EXPECTED} Minimum delay threshold is 30 minutes")
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Minimum delay threshold is 30 minutes")
         if delay_threshold_minutes > 600:
-            raise ValueError(f"{ERR_EXPECTED} Maximum delay threshold is 600 minutes (10 hours)")
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Maximum delay threshold is 600 minutes (10 hours)")
         if payout_amount_wei <= 0:
-            raise ValueError(f"{ERR_EXPECTED} payout_amount_wei must be positive")
+            raise gl.vm.UserError(f"{ERR_EXPECTED} payout_amount_wei must be positive")
 
         policy_id = self._next_policy_id()
-        self.policies[policy_id] = {
+        self.policies[policy_id] = json.dumps({
             "policy_id"               : policy_id,
             "policyholder"            : gl.message.sender_address,
             "flight_iata"             : flight_iata.upper().strip(),
@@ -233,7 +230,7 @@ class ParametricFlightInsurance(gl.Contract):
             "payout_amount_wei"       : payout_amount_wei,
             "state"                   : POLICY_ACTIVE,
             "claim_id"                : None,
-        }
+        })
         return policy_id
 
     # ── Write: file a claim ──────────────────────────────────────────────────
@@ -252,22 +249,22 @@ class ParametricFlightInsurance(gl.Contract):
         str : The newly created claim_id (e.g. "CLM-00002")
         """
         if policy_id not in self.policies:
-            raise ValueError(f"{ERR_EXPECTED} Policy '{policy_id}' does not exist")
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Policy '{policy_id}' does not exist")
 
-        policy = self.policies[policy_id]
+        policy = json.loads(self.policies[policy_id])
 
         if policy["policyholder"] != gl.message.sender_address:
-            raise ValueError(
+            raise gl.vm.UserError(
                 f"{ERR_EXPECTED} Only the policyholder can file a claim on '{policy_id}'"
             )
         if policy["state"] != POLICY_ACTIVE:
-            raise ValueError(
+            raise gl.vm.UserError(
                 f"{ERR_EXPECTED} Policy '{policy_id}' is not active "
                 f"(current state: '{policy['state']}')"
             )
 
         claim_id = self._next_claim_id()
-        self.claims[claim_id] = {
+        self.claims[claim_id] = json.dumps({
             "claim_id"               : claim_id,
             "policy_id"              : policy_id,
             "claimant"               : gl.message.sender_address,
@@ -276,10 +273,11 @@ class ParametricFlightInsurance(gl.Contract):
             "verdict_reasoning"      : "",
             "flight_status"          : "",
             "edge_case_detected"     : "none",
-        }
+        })
 
-        self.policies[policy_id]["state"]    = POLICY_CLAIMED
-        self.policies[policy_id]["claim_id"] = claim_id
+        policy["state"]    = POLICY_CLAIMED
+        policy["claim_id"] = claim_id
+        self.policies[policy_id] = json.dumps(policy)
         return claim_id
 
     # ── Write: settle a claim (core non-deterministic method) ────────────────
@@ -325,12 +323,12 @@ class ParametricFlightInsurance(gl.Contract):
         third-party settlement triggers in production workflows.
         """
         if claim_id not in self.claims:
-            raise ValueError(f"{ERR_EXPECTED} Claim '{claim_id}' does not exist")
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Claim '{claim_id}' does not exist")
 
-        claim = self.claims[claim_id]
+        claim = json.loads(self.claims[claim_id])
 
         if claim["state"] != CLAIM_PENDING:
-            raise ValueError(
+            raise gl.vm.UserError(
                 f"{ERR_EXPECTED} Claim '{claim_id}' is not pending "
                 f"(current state: '{claim['state']}')"
             )
@@ -437,19 +435,22 @@ Respond ONLY as valid JSON (no markdown fences):
             return delay_agrees and decision_agrees
 
         # ── Run consensus ────────────────────────────────────────────────────
-        result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+        result = gl.vm.run_nondet(leader_fn, validator_fn)
 
         # ── Persist outcome ──────────────────────────────────────────────────
         approved = result.get("approved", False)
 
-        self.claims[claim_id]["actual_delay_minutes"] = result.get("canonical_delay_minutes", 0)
-        self.claims[claim_id]["verdict_reasoning"]     = result.get("reasoning", "")
-        self.claims[claim_id]["flight_status"]         = result.get("flight_status", "unknown")
-        self.claims[claim_id]["edge_case_detected"]    = result.get("edge_case_detected", "none")
-        self.claims[claim_id]["state"] = CLAIM_APPROVED if approved else CLAIM_REJECTED
+        claim["actual_delay_minutes"] = result.get("canonical_delay_minutes", 0)
+        claim["verdict_reasoning"]     = result.get("reasoning", "")
+        claim["flight_status"]         = result.get("flight_status", "unknown")
+        claim["edge_case_detected"]    = result.get("edge_case_detected", "none")
+        claim["state"] = CLAIM_APPROVED if approved else CLAIM_REJECTED
+        self.claims[claim_id] = json.dumps(claim)
 
         policy_id = claim["policy_id"]
-        self.policies[policy_id]["state"] = POLICY_SETTLED if approved else POLICY_REJECTED
+        policy = json.loads(self.policies[policy_id])
+        policy["state"] = POLICY_SETTLED if approved else POLICY_REJECTED
+        self.policies[policy_id] = json.dumps(policy)
 
         # NOTE: In a production deployment the payout would be released here
         # via gl.message.send_tokens() or a ghost-contract call.  Omitted in
@@ -461,8 +462,8 @@ Respond ONLY as valid JSON (no markdown fences):
     def get_policy(self, policy_id: str) -> dict:
         """Return full policy record for the given policy_id."""
         if policy_id not in self.policies:
-            raise ValueError(f"{ERR_EXPECTED} Policy '{policy_id}' not found")
-        return self.policies[policy_id]
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Policy '{policy_id}' not found")
+        return json.loads(self.policies[policy_id])
 
     @gl.public.view
     def get_claim(self, claim_id: str) -> dict:
@@ -470,8 +471,8 @@ Respond ONLY as valid JSON (no markdown fences):
         Return full claim record including AI verdict and delay measurement.
         """
         if claim_id not in self.claims:
-            raise ValueError(f"{ERR_EXPECTED} Claim '{claim_id}' not found")
-        return self.claims[claim_id]
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Claim '{claim_id}' not found")
+        return json.loads(self.claims[claim_id])
 
     @gl.public.view
     def get_policy_with_claim(self, policy_id: str) -> dict:
@@ -480,11 +481,11 @@ Respond ONLY as valid JSON (no markdown fences):
         Useful for frontend dashboards.
         """
         if policy_id not in self.policies:
-            raise ValueError(f"{ERR_EXPECTED} Policy '{policy_id}' not found")
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Policy '{policy_id}' not found")
 
         policy   = self.policies[policy_id]
         claim_id = policy.get("claim_id")
-        claim    = self.claims[claim_id] if claim_id else None
+        claim = json.loads(self.claims[claim_id]) if claim_id else None
 
         return {
             "policy" : policy,
