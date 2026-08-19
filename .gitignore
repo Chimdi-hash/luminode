@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.gltest_cache/
+.coverage
+coverage.xml
+htmlcov/
+coverage/
+artifacts/
+abi.json
+.env
+.env.*
+!.env.example
