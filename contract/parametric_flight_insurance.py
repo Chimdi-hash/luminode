@@ -13,7 +13,6 @@
 # Author: U_StackLabs
 # -
 
-import genlayer as gl
 from genlayer import *
 import json
 
