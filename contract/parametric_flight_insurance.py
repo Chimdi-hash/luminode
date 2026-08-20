@@ -13,6 +13,7 @@
 # Author: U_StackLabs
 # -
 
+import genlayer as gl
 from genlayer import *
 import json
 
@@ -178,8 +179,8 @@ class ParametricFlightInsurance(gl.Contract):
         })
         
         # Update statistics and indexes
-        self.stat_total_policies += u256(1)
-        self.stat_active_policies += u256(1)
+        self.stat_total_policies = u256(int(self.stat_total_policies) + 1)
+        self.stat_active_policies = u256(int(self.stat_active_policies) + 1)
         
         user = self._get_sender()
         count = int(self.user_policy_count.get(user, u256(0))) + 1
@@ -222,9 +223,9 @@ class ParametricFlightInsurance(gl.Contract):
         self.policies[policy_id] = json.dumps(policy)
         
         # Update statistics
-        self.stat_active_policies -= u256(1)
-        self.stat_claimed_policies += u256(1)
-        self.stat_total_claims += u256(1)
+        self.stat_active_policies = u256(int(self.stat_active_policies) - 1)
+        self.stat_claimed_policies = u256(int(self.stat_claimed_policies) + 1)
+        self.stat_total_claims = u256(int(self.stat_total_claims) + 1)
         
         return claim_id
 
@@ -340,11 +341,11 @@ Respond ONLY as valid JSON (no markdown fences):
         self.policies[policy_id] = json.dumps(policy)
         
         # Update statistics
-        self.stat_claimed_policies -= u256(1)
+        self.stat_claimed_policies = u256(int(self.stat_claimed_policies) - 1)
         if approved:
-            self.stat_settled_policies += u256(1)
+            self.stat_settled_policies = u256(int(self.stat_settled_policies) + 1)
         else:
-            self.stat_rejected_policies += u256(1)
+            self.stat_rejected_policies = u256(int(self.stat_rejected_policies) + 1)
 
     # - View methods -
 
@@ -376,7 +377,7 @@ Respond ONLY as valid JSON (no markdown fences):
         }
 
     @gl.public.view
-    def list_policies_for(self, address: str) -> list:
+    def list_policies_for(self, address: str) -> dict:
         user = _address_text(address)
         count = int(self.user_policy_count.get(user, u256(0)))
         
@@ -385,7 +386,7 @@ Respond ONLY as valid JSON (no markdown fences):
             pid = self.user_policy_ids[user + "#" + str(i)]
             if pid in self.policies:
                 result.append(json.loads(self.policies[pid]))
-        return result
+        return {"policies": result}
 
     @gl.public.view
     def get_contract_info(self) -> dict:
