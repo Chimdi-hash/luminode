@@ -13,6 +13,7 @@
 # Author: U_StackLabs
 # -
 
+import genlayer as gl
 from genlayer import *
 import json
 
@@ -32,6 +33,47 @@ CLAIM_PENDING  = "pending"
 CLAIM_APPROVED = "approved"
 CLAIM_REJECTED = "rejected"
 
+
+def _fetch_flight_data(api_key: str, flight_iata: str, flight_date: str) -> dict:
+    url = (
+        "http://api.aviationstack.com/v1/flights"
+        f"?access_key={api_key}"
+        f"&flight_iata={flight_iata}"
+        f"&flight_date={flight_date}"
+        "&limit=1"
+    )
+
+    response = gl.nondet.web.get(url)
+
+    if response.status != 200:
+        raise gl.vm.UserError(
+            f"{ERR_EXTERNAL} AviationStack returned HTTP {response.status} "
+            f"for flight {flight_iata} on {flight_date}"
+        )
+
+    data = response.json()
+    if not data.get("data"):
+        raise gl.vm.UserError(
+            f"{ERR_EXTERNAL} No flight records returned for "
+            f"{flight_iata} on {flight_date}. "
+            "API might be delayed or flight doesn't exist."
+        )
+
+    flight_record = data["data"][0]
+    status = flight_record.get("flight_status", "unknown")
+    dep_delay = flight_record.get("departure", {}).get("delay") or 0
+    arr_delay = flight_record.get("arrival", {}).get("delay") or 0
+
+    canonical = arr_delay if arr_delay > 0 else dep_delay
+
+    return {
+        "flight_iata"             : flight_iata,
+        "flight_date"             : flight_date,
+        "flight_status"           : status,
+        "departure_delay_minutes" : dep_delay,
+        "arrival_delay_minutes"   : arr_delay,
+        "canonical_delay_minutes" : canonical,
+    }
 
 class ParametricFlightInsurance(gl.Contract):
     """
@@ -92,7 +134,7 @@ class ParametricFlightInsurance(gl.Contract):
 
     policies: TreeMap[str, str]
     claims: TreeMap[str, str]
-    config: TreeMap[str, str]
+    settings: TreeMap[str, str]
     next_id: u256
 
     # - Constructor -
@@ -115,13 +157,13 @@ class ParametricFlightInsurance(gl.Contract):
     @gl.public.write
     def set_api_key(self, api_key: str) -> None:
         sender = self._get_sender()
-        current_owner = self.config.get("owner", "")
+        current_owner = self.settings.get("owner", "")
         if not current_owner:
-            self.config["owner"] = sender
+            self.settings["owner"] = sender
             current_owner = sender
         if sender != current_owner:
             raise gl.vm.UserError("Only the owner can set the API key")
-        self.config["api_key"] = api_key
+        self.settings["api_key"] = api_key
 
     def _next_policy_id(self) -> str:
         pid = f"POL-{int(self.next_id):05d}"
@@ -132,69 +174,6 @@ class ParametricFlightInsurance(gl.Contract):
         cid = f"CLM-{int(self.next_id):05d}"
         self.next_id = u256(int(self.next_id) + 1)
         return cid
-
-    def _fetch_flight_data(self, flight_iata: str, flight_date: str) -> dict:
-        """
-        Fetch live flight data from AviationStack and return ONLY stable fields.
-
-        Volatile fields (updated_at, timestamps, comment counts, etc.) are
-        deliberately excluded to prevent spurious consensus failures caused by
-        the natural drift between independent validator API calls.
-
-        Returns
-        -------
-        dict with keys:
-            flight_iata, flight_date, flight_status,
-            departure_delay_minutes, arrival_delay_minutes,
-            canonical_delay_minutes
-        """
-        url = (
-            "http://api.aviationstack.com/v1/flights"
-            f"?access_key={self.config.get('api_key', '')}"
-            f"&flight_iata={flight_iata}"
-            f"&flight_date={flight_date}"
-            "&limit=1"
-        )
-
-        response = gl.nondet.web.get(url)
-
-        if response.status != 200:
-            raise gl.vm.UserError(
-                f"{ERR_EXTERNAL} AviationStack returned HTTP {response.status} "
-                f"for flight {flight_iata} on {flight_date}"
-            )
-
-        raw = json.loads(response.body.decode("utf-8"))
-
-        if not raw.get("data"):
-            raise gl.vm.UserError(
-                f"{ERR_EXTERNAL} No flight records returned for "
-                f"{flight_iata} on {flight_date}. "
-                "Flight may not have operated or date is too far in the future."
-            )
-
-        flight = raw["data"][0]
-        departure = flight.get("departure", {})
-        arrival   = flight.get("arrival",   {})
-
-        dep_delay = int(departure.get("delay") or 0)
-        arr_delay = int(arrival.get("delay")   or 0)
-        status    = flight.get("flight_status", "unknown")  # scheduled/active/landed/cancelled/diverted
-
-        # Canonical delay = arrival delay (traveller's actual experience).
-        # Fall back to departure delay if arrival data is absent (en-route).
-        canonical = arr_delay if arr_delay > 0 else dep_delay
-
-        return {
-            "flight_iata"              : flight_iata,
-            "flight_date"              : flight_date,
-            "flight_status"            : status,
-            "departure_delay_minutes"  : dep_delay,
-            "arrival_delay_minutes"    : arr_delay,
-            "canonical_delay_minutes"  : canonical,
-        }
-
-    # - Write: purchase a policy -
 
     @gl.public.write
     def purchase_policy(
@@ -342,15 +321,16 @@ class ParametricFlightInsurance(gl.Contract):
                 f"(current state: '{claim['state']}')"
             )
 
-        policy    = self.policies[claim["policy_id"]]
+        policy    = json.loads(self.policies[claim["policy_id"]])
         flight    = policy["flight_iata"]
         date      = policy["flight_date"]
         threshold = policy["delay_threshold_minutes"]
+        api_key = self.settings.get("api_key", "")
 
         # - Leader function -
         def leader_fn():
             # Step 1 - Fetch live data (non-deterministic web access)
-            flight_data = self._fetch_flight_data(flight, date)
+            flight_data = _fetch_flight_data(api_key, flight, date)
 
             canonical_delay = flight_data["canonical_delay_minutes"]
             flight_status   = flight_data["flight_status"]
@@ -409,7 +389,7 @@ Respond ONLY as valid JSON (no markdown fences):
             }
 
         # - Validator function -
-        def validator_fn(leaders_res) -> bool:
+        def validator_fn(leaders_res):
             if not isinstance(leaders_res, gl.vm.Return):
                 return False
 
@@ -419,7 +399,7 @@ Respond ONLY as valid JSON (no markdown fences):
 
             # Independently fetch - may differ slightly due to API call timing
             try:
-                my_data  = self._fetch_flight_data(flight, date)
+                my_data  = _fetch_flight_data(api_key, flight, date)
             except Exception:
                 # Cannot validate without data; abstain (return False)
                 return False
