@@ -11,7 +11,6 @@
 #     truth; LLM handles only qualitative drought severity analysis and reasoning.
 # -
 
-import genlayer as gl
 from genlayer import *
 import json
 
@@ -95,7 +94,6 @@ def _fetch_rainfall_data(latitude: str, longitude: str, start_date: str, end_dat
 class ParametricCropInsurance(gl.Contract):
     policies: TreeMap[str, str]
     claims: TreeMap[str, str]
-    settings: TreeMap[str, str]
     
     # Track policies per user (non-iterable TreeMap workaround)
     user_policy_count: TreeMap[str, u256]
@@ -114,7 +112,7 @@ class ParametricCropInsurance(gl.Contract):
 
     # - Constructor -
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self):
         pass
 
     # - Internal helpers -
@@ -379,8 +377,7 @@ Respond ONLY as valid JSON:
     @gl.public.view
     def get_contract_info(self) -> dict:
         return {
-            "owner"            : self.settings.get("owner", ""),
-            "total_policies"   : int(self.stat_total_policies),
+                        "total_policies"   : int(self.stat_total_policies),
             "active_policies"  : int(self.stat_active_policies),
             "claimed_policies" : int(self.stat_claimed_policies),
             "settled_policies" : int(self.stat_settled_policies),
