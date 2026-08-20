@@ -1,182 +1,107 @@
-# ParametricFlightInsurance — GenLayer Intelligent Contract
+# ParametricCropInsurance — GenLayer Intelligent Contract
 
-> **Automatic, trustless flight-delay insurance powered by GenLayer's Optimistic Democracy consensus.**
+> **Automatic, keyless weather-based drought insurance for farmers, powered by GenLayer's Optimistic Democracy.**
 
 ---
 
 ## What It Does
 
-`ParametricFlightInsurance` is a standalone GenLayer Intelligent Contract that lets users:
+`ParametricCropInsurance` is a standalone GenLayer Intelligent Contract that allows:
 
-1. **Buy** a parametric flight-delay insurance policy on-chain — specifying a flight, date, delay threshold (e.g. 120 min), and payout amount.
-2. **File** a claim after their flight lands.
-3. **Settle** the claim through decentralised AI-validator consensus — no human adjudicator, no oracle intermediary.
-
-The settlement step fetches **live flight data** from the AviationStack API, verifies the delay programmatically, and uses an LLM to handle policy-term edge cases (cancellation vs. delay, diversions, premature claims). Validators independently replicate this process and must agree before the claim is finalised on-chain.
+1. **Farmers** to purchase drought insurance on-chain by specifying their farm's coordinates (latitude and longitude), a date range, a cumulative rainfall threshold (in mm), and a payout amount.
+2. **Claimants** to file a claim if they experience a drought during the coverage period.
+3. **AI-Validator Consensus** to verify and settle the claim automatically by fetching weather records, aggregating cumulative rainfall, and deciding on the payout status without third-party oracles or API keys.
 
 ---
 
-## Why GenLayer Makes This Possible
+## Key Innovation: Free Public API Consensus
 
-Traditional smart contracts cannot settle this claim: they have no access to live flight status, cannot interpret policy language, and cannot handle the slight data variance between two independent API calls made seconds apart.
+Unlike traditional parametric contracts that require paid API plans, centralized oracles, or complex API key setup (which frequently crashes sandboxed environments), this contract queries the **Open-Meteo Historical Archive API**. 
 
-GenLayer provides:
-
-| Capability | How It's Used |
-|---|---|
-| **Live web access** | `gl.nondet.web.get()` fetches AviationStack API per validator |
-| **On-chain LLM reasoning** | `gl.nondet.exec_prompt()` interprets policy edge cases |
-| **Non-deterministic consensus** | `gl.vm.run_nondet_unsafe()` coordinates leader + validators |
-| **Equivalence Principle** | Validators compare delay values within 5-min margin |
+* **No API Keys Required:** Valid, public keyless endpoints ensure 100% successful deployments on the GenLayer Studio.
+* **Deterministic Aggregation + Qualitative Context:** Cumulative rainfall sum is calculated programmatically (preventing LLM calculation errors), while the LLM is leveraged solely to assess drought severity and write the final verdict reasoning.
 
 ---
 
 ## Consensus Design — Comparative Equivalence Principle
 
-This contract uses the **Comparative Equivalence Principle**, where validators replicate the leader's computation and compare quantifiable outputs within a tolerance.
+To verify claims, validators replicate the leader's computation using a **Comparative Equivalence Principle**:
 
 ```
 LEADER
-  ├─ Fetches live flight data from AviationStack
-  ├─ Extracts stable fields: dep_delay, arr_delay, flight_status
-  ├─ Derives canonical_delay_minutes (arrival delay preferred)
-  ├─ Programmatic check: delay >= threshold?   ← deterministic ground truth
-  ├─ Injects verified numbers into LLM prompt
-  └─ LLM adds reasoning + detects edge cases (cancellation, diversion)
-       Returns → { approved, canonical_delay_minutes, reasoning, edge_case }
+  ├─ Fetches historical weather daily rainfall list from Open-Meteo
+  ├─ Calculates cumulative rainfall sum (in mm)
+  ├─ Evaluates rain < threshold?  ← Deterministic ground-truth check
+  ├─ Injects metrics into LLM prompt
+  └─ LLM writes short reasoning explaining the drought severity
+       Returns → { approved, cumulative_rain_mm, reasoning, edge_case }
 
-EACH VALIDATOR
-  ├─ Independently fetches the same AviationStack endpoint
-  ├─ Derives its own canonical_delay_minutes
-  └─ Accepts leader if BOTH:
-       (a) |validator_delay − leader_delay| ≤ 5 minutes   ← within API variance
-       (b) validator's programmatic approval == leader's   ← same decision
+EACH CONSENSUS VALIDATOR
+  ├─ Independently fetches the same Open-Meteo coordinates/dates
+  ├─ Aggregates its own cumulative rainfall sum
+  └─ Accepts leader's result if BOTH:
+       (a) |validator_rain - leader_rain| <= 0.2 mm   ← accounts for floating-point changes
+       (b) validator's programmatic approval == leader's decision
 ```
-
-### Why 5-minute margin?
-
-AviationStack updates delay figures in approximately 1-minute increments. Two independent validator calls separated by a few seconds can legitimately straddle an update, producing values that differ by 1–3 minutes. A 5-minute margin absorbs this variance without compromising security: a 5-minute discrepancy at a 120-minute threshold cannot flip the outcome.
-
-### Why programmatic approval overrides the LLM?
-
-The LLM is used **only** for policy-term interpretation and reasoning generation. The numeric delay check is deterministic code — injected into the prompt as "GROUND TRUTH" with an explicit instruction not to override it. This prevents hallucination on character-level or numerical tasks while preserving the LLM's ability to handle qualitative edge cases.
 
 ---
 
 ## Contract API
 
-### Write Methods
+### Write Methods (`gl.public.write`)
 
-| Method | Description |
-|---|---|
-| `purchase_policy(flight_iata, flight_date, delay_threshold_minutes, payout_amount_wei)` | Creates a new insurance policy. Returns `policy_id`. |
-| `file_claim(policy_id)` | Opens a pending claim against an active policy. Returns `claim_id`. |
-| `settle_claim(claim_id)` | **Core method.** Triggers AI-validator consensus to approve or reject the claim. Callable by anyone. |
+* `purchase_policy(latitude, longitude, start_date, end_date, rain_threshold_mm, payout_amount_wei)`: Purchases a policy. Returns `policy_id`.
+* `file_claim(policy_id)`: Registers a pending claim for an active policy. Returns `claim_id`.
+* `settle_claim(claim_id)`: Triggers AI-validator consensus. Queries Open-Meteo API, calculates rainfall, executes LLM evaluation, and settles the claim on-chain.
 
-### View Methods
+### View Methods (`gl.public.view`)
 
-| Method | Description |
-|---|---|
-| `get_policy(policy_id)` | Returns full policy record. |
-| `get_claim(claim_id)` | Returns claim record including AI verdict and measured delay. |
-| `get_policy_with_claim(policy_id)` | Returns policy + claim in one call. |
-| `list_policies_for(address)` | Returns all policies owned by an address. |
-| `get_contract_info()` | Returns aggregate stats (total/active/settled/rejected counts). |
+* `get_policy(policy_id)`: Returns the detailed policy JSON.
+* `get_claim(claim_id)`: Returns the detailed claim JSON.
+* `get_policy_with_claim(policy_id)`: Returns both the policy and its claim in one response.
+* `list_policies_for(address)`: Returns all policies purchased by a specific address.
+* `get_contract_info()`: Returns global contract statistics (total policies, active, claimed, settled, rejected).
 
 ---
 
-## Lifecycle State Machine
+## Deployment & Testing in GenLayer Studio
 
-```
-Policy: ACTIVE ──file_claim()──► CLAIMED ──settle_claim()──► SETTLED
-                                                          └──► REJECTED
+### Step 1 — Deploy
+Leave constructor arguments blank. The contract constructor accepts optional arguments dynamically to prevent deployment crashes.
 
-Claim:  PENDING ──settle_claim()──► APPROVED
-                               └──► REJECTED
-```
-
----
-
-## Deployment & Usage
-
-### Prerequisites
-
-1. Get a free AviationStack API key at [aviationstack.com](https://aviationstack.com/) (100 req/month free).
-2. Open [GenLayer Studio](https://studio.genlayer.com) or deploy via the GenLayer CLI.
-
-### Deploy
-
+### Step 2 — Buy a Policy
+Call `purchase_policy` with a location and past date range (historical archive requires dates in the past, e.g. a previous crop season):
 ```python
-# Constructor argument: your AviationStack API key
-ParametricFlightInsurance("YOUR_AVIATIONSTACK_KEY")
-```
-
-### Example Walkthrough
-
-```python
-# 1. Purchase a policy
-policy_id = contract.purchase_policy(
-    flight_iata="BA456",
-    flight_date="2025-09-01",
-    delay_threshold_minutes=120,
-    payout_amount_wei=1_000_000_000_000_000_000  # 1 GEN
+purchase_policy(
+    latitude="52.52",
+    longitude="13.41",
+    start_date="2023-08-01",
+    end_date="2023-08-15",
+    rain_threshold_mm=80,
+    payout_amount_wei=1000000000000000000
 )
-# → "POL-00001"
-
-# 2. File a claim (after the flight lands)
-claim_id = contract.file_claim("POL-00001")
-# → "CLM-00002"
-
-# 3. Settle via AI consensus (anyone can call this)
-contract.settle_claim("CLM-00002")
-
-# 4. Read the verdict
-result = contract.get_claim("CLM-00002")
-# {
-#   "claim_id": "CLM-00002",
-#   "state": "approved",                         ← or "rejected"
-#   "actual_delay_minutes": 143,
-#   "verdict_reasoning": "Flight BA456 arrived 143 minutes late on 2025-09-01,
-#                         exceeding the 120-minute policy threshold.",
-#   "flight_status": "landed",
-#   "edge_case_detected": "none"
-# }
+# Returns: "POL-00000"
 ```
 
----
+### Step 3 — File a Claim
+Call `file_claim` from the same wallet address:
+```python
+file_claim("POL-00000")
+# Returns: "CLM-00001"
+```
 
-## Error Handling
+### Step 4 — Settle the Claim
+Call `settle_claim` (callable by anyone to allow automated scheduler bots):
+```python
+settle_claim("CLM-00001")
+```
 
-The contract uses a two-prefix classification scheme:
-
-| Prefix | Meaning | Example |
-|---|---|---|
-| `[EXPECTED]` | Deterministic business-logic error — fails consistently on all nodes | Wrong policyholder, invalid flight code |
-| `[EXTERNAL]` | Transient external-service failure — safe to retry | AviationStack 500, no flight records found |
-
----
-
-## Stable-Field Extraction
-
-Following GenLayer best practices, `_fetch_flight_data()` extracts **only fields that are stable across independent API calls**:
-
-✅ Extracted: `departure_delay`, `arrival_delay`, `flight_status`  
-❌ Excluded: `updated_at`, `live.latitude`, `live.longitude`, `live.speed`, comment counts, cache headers
-
-This is the primary technique for preventing false consensus failures on web-data contracts.
-
----
-
-## Potential Extensions
-
-- **Multi-leg policies** — chain connections; payout if *any* leg is delayed.
-- **Cancellation policies** — separate payout logic for `flight_status == "cancelled"`.
-- **Ghost-contract payout** — wire `gl.message.send_tokens()` to `settle_claim()` for real on-chain payouts.
-- **DAO governance** — let token holders vote on threshold parameters.
-- **Second data source** — add AeroDataBox or OpenSky as a corroborating API for higher security.
-
----
-
-## License
-
-MIT
+### Step 5 — Verify Payout
+Call `get_claim("CLM-00001")` to view the finalized consensus result:
+```json
+{
+  "state": "approved",
+  "cumulative_rain_mm": 69.9,
+  "verdict_reasoning": "Drought confirmed. Cumulative rain was 69.9mm, below the 80mm threshold. Crop stress is moderate."
+}
+```

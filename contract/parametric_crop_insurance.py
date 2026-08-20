@@ -1,29 +1,23 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 # -
-# ParametricFlightInsurance - GenLayer Intelligent Contract
+# ParametricCropInsurance - GenLayer Intelligent Contract
 #
-# Automatically settles flight-delay insurance claims using:
-#   - Live flight data fetched from the AviationStack API
+# Automatically settles parametric agricultural drought insurance claims using:
+#   - Historical weather data fetched from the free keyless Open-Meteo API
 #   - Comparative Equivalence Principle - validators independently fetch the
-#     same flight data and must agree on the delay value (within 5-min margin)
-#     AND on the approval decision before consensus is reached
-#   - Grounded LLM reasoning - verified delay figures injected as ground truth;
-#     LLM handles only policy-term interpretation and edge-case detection
-#
-# Author: U_StackLabs
+#     precipitation archive, calculate cumulative rainfall, and must agree
+#     on the cumulative sum (within 0.2mm margin) AND the decision.
+#   - Grounded LLM reasoning - verified cumulative rain sum injected as ground
+#     truth; LLM handles only qualitative drought severity analysis and reasoning.
 # -
 
 import genlayer as gl
 from genlayer import *
 import json
 
-# - Error classification prefixes -
-# [EXPECTED] = deterministic business-logic errors (fail consistently on all nodes)
-# [EXTERNAL] = transient external-service failures (safe to retry)
 ERR_EXPECTED = "[EXPECTED]"
 ERR_EXTERNAL = "[EXTERNAL]"
 
-# - Policy / Claim lifecycle states -
 POLICY_ACTIVE   = "active"
 POLICY_CLAIMED  = "claimed"
 POLICY_SETTLED  = "settled"
@@ -54,49 +48,51 @@ def _address_text(value):
     return result
 
 
-def _fetch_flight_data(api_key: str, flight_iata: str, flight_date: str) -> dict:
+def _fetch_rainfall_data(latitude: str, longitude: str, start_date: str, end_date: str) -> dict:
     url = (
-        "http://api.aviationstack.com/v1/flights"
-        f"?access_key={api_key}"
-        f"&flight_iata={flight_iata}"
-        f"&flight_date={flight_date}"
-        "&limit=1"
+        "https://archive-api.open-meteo.com/v1/archive"
+        f"?latitude={latitude}"
+        f"&longitude={longitude}"
+        f"&start_date={start_date}"
+        f"&end_date={end_date}"
+        "&daily=rain_sum"
+        "&timezone=GMT"
     )
 
     response = gl.nondet.web.get(url)
 
     if response.status != 200:
         raise gl.vm.UserError(
-            f"{ERR_EXTERNAL} AviationStack returned HTTP {response.status} "
-            f"for flight {flight_iata} on {flight_date}"
+            f"{ERR_EXTERNAL} Open-Meteo API returned HTTP {response.status} "
+            f"for coordinates {latitude}, {longitude}"
         )
 
     data = response.json()
-    if not data.get("data"):
+    if not data.get("daily") or not data["daily"].get("rain_sum"):
         raise gl.vm.UserError(
-            f"{ERR_EXTERNAL} No flight records returned for "
-            f"{flight_iata} on {flight_date}. "
-            "API might be delayed or flight doesn't exist."
+            f"{ERR_EXTERNAL} No weather records returned for coordinates "
+            f"{latitude}, {longitude} between {start_date} and {end_date}."
         )
 
-    flight_record = data["data"][0]
-    status = flight_record.get("flight_status", "unknown")
-    dep_delay = flight_record.get("departure", {}).get("delay") or 0
-    arr_delay = flight_record.get("arrival", {}).get("delay") or 0
-
-    canonical = arr_delay if arr_delay > 0 else dep_delay
+    rain_list = data["daily"]["rain_sum"]
+    clean_rain = [r for r in rain_list if r is not None]
+    
+    if not clean_rain:
+        total_rain = 0.0
+    else:
+        total_rain = sum(clean_rain)
 
     return {
-        "flight_iata"             : flight_iata,
-        "flight_date"             : flight_date,
-        "flight_status"           : status,
-        "departure_delay_minutes" : dep_delay,
-        "arrival_delay_minutes"   : arr_delay,
-        "canonical_delay_minutes" : canonical,
+        "latitude"        : latitude,
+        "longitude"       : longitude,
+        "start_date"      : start_date,
+        "end_date"        : end_date,
+        "daily_rain_list" : clean_rain,
+        "cumulative_rain" : round(total_rain, 2),
     }
 
 
-class ParametricFlightInsurance(gl.Contract):
+class ParametricCropInsurance(gl.Contract):
     policies: TreeMap[str, str]
     claims: TreeMap[str, str]
     settings: TreeMap[str, str]
@@ -118,26 +114,13 @@ class ParametricFlightInsurance(gl.Contract):
 
     # - Constructor -
 
-    def __init__(self, api_key: str = ""):
-        if api_key:
-            self.settings["api_key"] = api_key
-            self.settings["owner"] = self._get_sender()
+    def __init__(self, *args, **kwargs):
+        pass
 
     # - Internal helpers -
 
     def _get_sender(self) -> str:
         return _address_text(gl.message.sender_address)
-
-    @gl.public.write
-    def set_api_key(self, api_key: str) -> None:
-        sender = self._get_sender()
-        current_owner = self.settings.get("owner", "")
-        if not current_owner:
-            self.settings["owner"] = sender
-            current_owner = sender
-        if sender != current_owner:
-            raise gl.vm.UserError("Only the owner can set the API key")
-        self.settings["api_key"] = api_key
 
     def _next_policy_id(self) -> str:
         pid = f"POL-{int(self.next_id):05d}"
@@ -152,32 +135,46 @@ class ParametricFlightInsurance(gl.Contract):
     @gl.public.write
     def purchase_policy(
         self,
-        flight_iata           : str,
-        flight_date           : str,
-        delay_threshold_minutes: int,
-        payout_amount_wei     : int,
+        latitude           : str,
+        longitude          : str,
+        start_date         : str,
+        end_date           : str,
+        rain_threshold_mm  : int,
+        payout_amount_wei  : int,
     ) -> str:
-        if not flight_iata or len(flight_iata.strip()) < 3:
-            raise gl.vm.UserError(f"{ERR_EXPECTED} Invalid IATA code: '{flight_iata}'")
-        if not flight_date or len(flight_date) != 10:
-            raise gl.vm.UserError(f"{ERR_EXPECTED} flight_date must be YYYY-MM-DD, got '{flight_date}'")
-        if delay_threshold_minutes < 30:
-            raise gl.vm.UserError(f"{ERR_EXPECTED} Minimum delay threshold is 30 minutes")
-        if delay_threshold_minutes > 600:
-            raise gl.vm.UserError(f"{ERR_EXPECTED} Maximum delay threshold is 600 minutes (10 hours)")
+        """
+        Purchase a parametric drought insurance policy.
+        
+        Parameters
+        ----------
+        latitude           : Latitude of the farm (e.g., "52.52")
+        longitude          : Longitude of the farm (e.g., "13.41")
+        start_date         : Start of coverage YYYY-MM-DD (e.g., "2023-08-01")
+        end_date           : End of coverage YYYY-MM-DD (e.g., "2023-08-15")
+        rain_threshold_mm  : Cumulative rain sum below which payout triggers (e.g. 20)
+        payout_amount_wei  : Payout amount in Wei
+        """
+        if not latitude or not longitude:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} Coordinates cannot be empty")
+        if len(start_date) != 10 or len(end_date) != 10:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} dates must be YYYY-MM-DD format")
+        if rain_threshold_mm <= 0:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} rain_threshold_mm must be positive")
         if payout_amount_wei <= 0:
             raise gl.vm.UserError(f"{ERR_EXPECTED} payout_amount_wei must be positive")
 
         policy_id = self._next_policy_id()
         self.policies[policy_id] = json.dumps({
-            "policy_id"               : policy_id,
-            "policyholder"            : self._get_sender(),
-            "flight_iata"             : flight_iata.upper().strip(),
-            "flight_date"             : flight_date,
-            "delay_threshold_minutes" : delay_threshold_minutes,
-            "payout_amount_wei"       : payout_amount_wei,
-            "state"                   : POLICY_ACTIVE,
-            "claim_id"                : None,
+            "policy_id"              : policy_id,
+            "policyholder"           : self._get_sender(),
+            "latitude"               : latitude.strip(),
+            "longitude"              : longitude.strip(),
+            "start_date"             : start_date,
+            "end_date"               : end_date,
+            "rain_threshold_mm"      : rain_threshold_mm,
+            "payout_amount_wei"      : payout_amount_wei,
+            "state"                  : POLICY_ACTIVE,
+            "claim_id"               : None,
         })
         
         # Update statistics and indexes
@@ -210,14 +207,13 @@ class ParametricFlightInsurance(gl.Contract):
 
         claim_id = self._next_claim_id()
         self.claims[claim_id] = json.dumps({
-            "claim_id"               : claim_id,
-            "policy_id"              : policy_id,
-            "claimant"               : self._get_sender(),
-            "state"                  : CLAIM_PENDING,
-            "actual_delay_minutes"   : -1,
-            "verdict_reasoning"      : "",
-            "flight_status"          : "",
-            "edge_case_detected"     : "none",
+            "claim_id"             : claim_id,
+            "policy_id"            : policy_id,
+            "claimant"             : self._get_sender(),
+            "state"                : CLAIM_PENDING,
+            "cumulative_rain_mm"   : -1.0,
+            "verdict_reasoning"    : "",
+            "edge_case_detected"   : "none",
         })
 
         policy["state"]    = POLICY_CLAIMED
@@ -245,95 +241,85 @@ class ParametricFlightInsurance(gl.Contract):
             )
 
         policy    = json.loads(self.policies[claim["policy_id"]])
-        flight    = policy["flight_iata"]
-        date      = policy["flight_date"]
-        threshold = policy["delay_threshold_minutes"]
-        api_key = self.settings.get("api_key", "")
+        lat       = policy["latitude"]
+        lon       = policy["longitude"]
+        start     = policy["start_date"]
+        end       = policy["end_date"]
+        threshold = policy["rain_threshold_mm"]
 
         def leader_fn():
-            flight_data = _fetch_flight_data(api_key, flight, date)
+            weather = _fetch_rainfall_data(lat, lon, start, end)
+            cum_rain = weather["cumulative_rain"]
 
-            canonical_delay = flight_data["canonical_delay_minutes"]
-            flight_status   = flight_data["flight_status"]
-
-            programmatic_approved = (canonical_delay >= threshold)
+            drought_active = (cum_rain < threshold)
 
             prompt = f"""
-You are a senior claims adjudicator for parametric flight-delay insurance.
+You are an agricultural insurance assessor analyzing weather data for a parametric drought policy.
 
-POLICY TERMS
-  Flight       : {flight}
-  Date         : {date}
-  Payout trigger: Arrival delay - {threshold} minutes
+POLICY TERMS:
+- Start Date: {start}
+- End Date: {end}
+- Drought Rain Threshold: {threshold} mm (Cumulative rain below this triggers payout)
 
-VERIFIED FLIGHT DATA  - injected from live aviation API, treat as GROUND TRUTH
-  Flight status              : {flight_status}
-  Departure delay (minutes)  : {flight_data['departure_delay_minutes']}
-  Arrival delay   (minutes)  : {flight_data['arrival_delay_minutes']}
-  Canonical delay used        : {canonical_delay} minutes
+VERIFIED WEATHER ARCHIVE DATA:
+- Location Coordinates: Latitude {lat}, Longitude {lon}
+- Verified Cumulative Rainfall over period: {cum_rain} mm
 
-PROGRAMMATIC VERDICT  - computed by code, DO NOT override
-  Delay meets threshold: {programmatic_approved}
+PROGRAMMATIC VERDICT:
+- Rain is below threshold: {drought_active}
 
-YOUR TASK
-  1. Honour the programmatic verdict - do NOT change approved/rejected
-     based on your own delay calculation.
-  2. Identify any edge cases:
-       - "cancelled" flight - different claim type, note as edge case
-       - "diverted" flight  - typically a covered delay, note it
-       - "scheduled" status - flight has not yet landed, claim premature
-  3. Write a 1-2 sentence plain-English reasoning for the claimant.
+YOUR TASK:
+1. Validate the programmatic verdict. If cumulative rain ({cum_rain} mm) is less than threshold ({threshold} mm), approve the claim.
+2. Analyze the severity. Note if it is a severe drought (e.g., less than 20% of threshold) or borderline.
+3. Keep reasoning concise (1-2 sentences).
 
-Respond ONLY as valid JSON (no markdown fences):
+Respond ONLY as valid JSON:
 {{
-  "approved"                : {str(programmatic_approved).lower()},
-  "canonical_delay_minutes" : {canonical_delay},
-  "reasoning"               : "<1-2 sentences for the claimant>",
-  "flight_status"           : "{flight_status}",
-  "edge_case_detected"      : "none" or "<brief description>"
+  "approved"             : {str(drought_active).lower()},
+  "cumulative_rain_mm"   : {cum_rain},
+  "reasoning"            : "<concise description of the severity and outcome>",
+  "edge_case_detected"   : "none" or "<description>"
 }}
 """
             llm_verdict = gl.nondet.exec_prompt(prompt, response_format="json")
 
             return {
-                "approved"                : programmatic_approved,
-                "canonical_delay_minutes" : canonical_delay,
-                "reasoning"               : llm_verdict.get("reasoning", ""),
-                "flight_status"           : flight_status,
-                "edge_case_detected"      : llm_verdict.get("edge_case_detected", "none"),
+                "approved"             : drought_active,
+                "cumulative_rain_mm"   : cum_rain,
+                "reasoning"            : llm_verdict.get("reasoning", ""),
+                "edge_case_detected"   : llm_verdict.get("edge_case_detected", "none"),
             }
 
         def validator_fn(leaders_res):
             if not isinstance(leaders_res, gl.vm.Return):
                 return False
 
-            leader_data   = leaders_res.calldata
-            leader_delay  = leader_data.get("canonical_delay_minutes", -1)
-            leader_ok     = leader_data.get("approved", False)
+            leader_data = leaders_res.calldata
+            leader_rain = leader_data.get("cumulative_rain_mm", -1.0)
+            leader_ok   = leader_data.get("approved", False)
 
             try:
-                my_data  = _fetch_flight_data(api_key, flight, date)
+                my_data = _fetch_rainfall_data(lat, lon, start, end)
             except Exception:
                 return False
 
-            my_delay = my_data["canonical_delay_minutes"]
-            my_ok    = (my_delay >= threshold)
+            my_rain = my_data["cumulative_rain"]
+            my_ok   = (my_rain < threshold)
 
-            delay_agrees = abs(my_delay - leader_delay) <= 5
-
-            near_threshold = abs(my_delay - threshold) <= 5
+            rain_agrees = abs(my_rain - leader_rain) <= 0.2
+            
+            near_threshold = abs(my_rain - threshold) <= 0.5
             decision_agrees = (my_ok == leader_ok) or near_threshold
 
-            return delay_agrees and decision_agrees
+            return rain_agrees and decision_agrees
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
         approved = result.get("approved", False)
 
-        claim["actual_delay_minutes"] = result.get("canonical_delay_minutes", 0)
-        claim["verdict_reasoning"]     = result.get("reasoning", "")
-        claim["flight_status"]         = result.get("flight_status", "unknown")
-        claim["edge_case_detected"]    = result.get("edge_case_detected", "none")
+        claim["cumulative_rain_mm"] = result.get("cumulative_rain_mm", 0.0)
+        claim["verdict_reasoning"]   = result.get("reasoning", "")
+        claim["edge_case_detected"]  = result.get("edge_case_detected", "none")
         claim["state"] = CLAIM_APPROVED if approved else CLAIM_REJECTED
         self.claims[claim_id] = json.dumps(claim)
 
