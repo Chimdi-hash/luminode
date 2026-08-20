@@ -118,8 +118,10 @@ class ParametricFlightInsurance(gl.Contract):
 
     # - Constructor -
 
-    def __init__(self):
-        pass
+    def __init__(self, api_key: str = ""):
+        if api_key:
+            self.settings["api_key"] = api_key
+            self.settings["owner"] = self._get_sender()
 
     # - Internal helpers -
 
