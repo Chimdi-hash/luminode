@@ -13,7 +13,6 @@
 # Author: U_StackLabs
 # -
 
-import genlayer as gl
 from genlayer import *
 import json
 
@@ -151,7 +150,7 @@ class ParametricFlightInsurance(gl.Contract):
         """
         url = (
             "http://api.aviationstack.com/v1/flights"
-            f"?access_key={self.config.get("api_key", "")}"
+            f"?access_key={self.config.get('api_key', '')}"
             f"&flight_iata={flight_iata}"
             f"&flight_date={flight_date}"
             "&limit=1"
