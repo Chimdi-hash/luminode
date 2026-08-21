@@ -5,7 +5,7 @@
 ---
 
 ## Deployed Contract Address
-The contract is compiled, linted, and deployed on the GenLayer Studio Bradbury network:
+The contract is compiled, linted, and deployed on the GenLayer Studio network:
 * **Contract Address:** [`0x246BE62A430A8E81B901BB6748Ad581090829713`](https://explorer-studio.genlayer.com/address/0x246BE62A430A8E81B901BB6748Ad581090829713)
 
 ---
