@@ -4,6 +4,12 @@
 
 ---
 
+## Deployed Contract Address
+The contract is compiled, linted, and deployed on the GenLayer Studio Bradbury network:
+* **Contract Address:** `0x246BE62A430A8E81B901BB6748Ad581090829713`
+
+---
+
 ## What It Does
 
 `LumiNode` is a decentralized intelligent contract designed to audit the performance of blockchain validators, decentralized RPC nodes, or edge storage servers against custom specification profiles.
