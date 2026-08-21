@@ -1,77 +1,79 @@
 """
-Shared pytest fixtures for ParametricCropInsurance test suite.
+Shared pytest fixtures for LumiNode test suite.
 
 Fixtures provide:
-  - Mock Open-Meteo rainfall response builder
-  - Sample policy and claim configuration constants
+  - Mock Node Telemetry log data responses
+  - Mock log repository response builders
+  - Sample specification and telemetry config constants
 """
 
 import pytest
 
-# ── Sample configuration constants ───────────────────────────────────────────
+VERSION = "1.0"
 
-SAMPLE_LATITUDE      = "52.52"
-SAMPLE_LONGITUDE     = "13.41"
-SAMPLE_START_DATE    = "2023-08-01"
-SAMPLE_END_DATE      = "2023-08-15"
-SAMPLE_THRESHOLD_MM  = 50   # 50 mm rain threshold for drought
-SAMPLE_PAYOUT         = 1_000_000_000_000_000_000  # 1 GEN in wei
-
-OWNER_ADDRESS         = "0xOwner000000000000000000000000000000000001"
-POLICYHOLDER_ADDRESS  = "0xHolder00000000000000000000000000000000002"
-OTHER_ADDRESS         = "0xOther000000000000000000000000000000000003"
+# Sample addresses
+AUDITOR_ADDRESS = "0xholder00000000000000000000000000000000002"
+CREATOR_ADDRESS = "0xowner000000000000000000000000000000000001"
 
 
-# ── Mock Open-Meteo response builders ────────────────────────────────────────
-
-def make_openmeteo_response(
-    rainfall_list: list = None,
+def make_mock_log_response(
+    cpu_usage_pct: float = 24.5,
+    uptime_pct: float = 99.98,
+    memory_leak_detected: bool = False,
 ) -> dict:
-    """Build a minimal Open-Meteo archive API response dict."""
-    if rainfall_list is None:
-        rainfall_list = [0.0] * 15
+    """Build a minimal node log structure in JSON format."""
     return {
-        "daily": {
-            "time": [f"2023-08-{i:02d}" for i in range(1, 16)],
-            "rain_sum": rainfall_list
-        }
+        "node_status": "ONLINE",
+        "cpu_usage_avg": cpu_usage_pct,
+        "memory_leak": memory_leak_detected,
+        "uptime": uptime_pct,
     }
 
 
-# ── Fixtures ─────────────────────────────────────────────────────────────────
-
 @pytest.fixture
-def drought_flight_data():  # keeping fixture names similar or updated
-    """Rainfall sum of 12.5mm — below 50mm threshold (drought active)."""
-    return make_openmeteo_response(
-        rainfall_list=[1.0, 0.5, 0.0, 2.0, 0.0, 4.0, 0.0, 0.0, 1.0, 0.0, 0.0, 3.0, 0.0, 1.0, 0.0]
+def clean_node_telemetry_logs():
+    """Telemetry report representing a perfectly healthy, passing node."""
+    return make_mock_log_response(
+        cpu_usage_pct=15.2,
+        uptime_pct=99.99,
+        memory_leak_detected=False,
     )
 
 
 @pytest.fixture
-def non_drought_flight_data():
-    """Rainfall sum of 75.0mm — above 50mm threshold (no drought)."""
-    return make_openmeteo_response(
-        rainfall_list=[5.0, 10.0, 8.0, 2.0, 5.0, 15.0, 0.0, 1.0, 4.0, 5.0, 0.0, 10.0, 5.0, 3.0, 2.0]
+def failing_node_telemetry_logs():
+    """Telemetry report representing a failing node (high CPU, memory leaks)."""
+    return make_mock_log_response(
+        cpu_usage_pct=98.5,
+        uptime_pct=84.2,
+        memory_leak_detected=True,
     )
 
 
 @pytest.fixture
-def near_threshold_flight_data():
-    """Rainfall sum of 49.8mm — just under 50mm threshold."""
-    return make_openmeteo_response(
-        rainfall_list=[3.0] * 15 + [4.8]
-    )
+def sample_spec_json() -> str:
+    """Standard Node Spec JSON payload."""
+    import json
+    return json.dumps({
+        "schema_version": VERSION,
+        "auditor": AUDITOR_ADDRESS,
+        "node_id": "LUMI-NODE-PROD-01",
+        "spec_description": "Production edge validator specification profile.",
+        "metrics": [
+            {"metric_id": "uptime_check", "description": "Uptime must be >= 99.9%"},
+            {"metric_id": "cpu_check", "description": "Average CPU usage must be <= 80%"},
+            {"metric_id": "memory_leak_check", "description": "No memory leaks detected"}
+        ]
+    })
 
 
 @pytest.fixture
-def sample_policy_params() -> dict:
-    """Standard crop policy parameters for testing."""
-    return {
-        "latitude":          SAMPLE_LATITUDE,
-        "longitude":         SAMPLE_LONGITUDE,
-        "start_date":        SAMPLE_START_DATE,
-        "end_date":          SAMPLE_END_DATE,
-        "rain_threshold_mm": SAMPLE_THRESHOLD_MM,
-        "payout_amount_wei": SAMPLE_PAYOUT,
-    }
+def sample_telemetry_json() -> str:
+    """Standard Telemetry submission JSON payload."""
+    import json
+    return json.dumps({
+        "schema_version": VERSION,
+        "spec_id": "", # filled dynamically in tests
+        "report_summary": "Node audit reports for daily logs. CPU and Memory are stable.",
+        "log_urls": ["https://metrics.luminode.dev/nodes/lumi-node-prod-01.json"]
+    })

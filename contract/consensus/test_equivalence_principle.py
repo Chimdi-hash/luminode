@@ -1,98 +1,83 @@
 """
-Consensus tests — verify Comparative Equivalence Principle behavior.
+Consensus tests — verify Equivalence Principle behaviour.
 
 These tests simulate leader and validator running independently and check
-that the equivalence checks produce correct accept/reject decisions across
-a range of rainfall scenarios.
+that the equivalence checks produce correct verification decisions across
+a range of audit proposals.
 """
 
 import pytest
 
 
-THRESHOLD = 50  # Default threshold used in tests (50mm rain threshold)
-
-
-def leader_result(rain: float, threshold: int = THRESHOLD, approved: bool = None) -> dict:
-    """Build a mock leader result dict."""
-    if approved is None:
-        approved = rain < threshold
+def make_mock_proposal(spec_id: str, spec_digest: str, telemetry_digest: str, state: str, metrics: list) -> dict:
+    """Build a mock consensus proposal dict."""
     return {
-        "approved"             : approved,
-        "cumulative_rain_mm"   : rain,
-        "reasoning"            : "Mock reasoning.",
-        "edge_case_detected"   : "none",
+        "spec_id": spec_id,
+        "spec_digest": spec_digest,
+        "telemetry_digest": telemetry_digest,
+        "state": state,
+        "source_observations": [
+            {
+                "source_index": 0,
+                "url": "https://metrics.luminode.dev/nodes/lumi-node-prod-01.json",
+                "status_class": "OK",
+                "available": True,
+                "media_accepted": True,
+                "redirect_blocked": False,
+                "content_digest": "a" * 64,
+            }
+        ],
+        "observation_digest": "b" * 64,
+        "metrics": metrics,
     }
 
 
-def validator_check(leader: dict, my_rain: float, threshold: int = THRESHOLD) -> bool:
+def validator_check(leader: dict, expected: dict) -> bool:
     """
-    Mirrors the validator_fn logic from settle_claim().
+    Mirrors the validator_fn exact-match comparative logic from audit_node().
     Returns True if validator accepts leader's result.
     """
-    leader_rain    = leader["cumulative_rain_mm"]
-    leader_ok      = leader["approved"]
-    my_ok          = my_rain < threshold
-    rain_agrees    = abs(my_rain - leader_rain) <= 0.2
-    near_threshold = abs(my_rain - threshold) <= 0.5
-    decision_agrees = (my_ok == leader_ok) or near_threshold
-    return rain_agrees and decision_agrees
+    return leader == expected
 
 
 # ── Straightforward consensus ─────────────────────────────────────────────────
 
-class TestStraightforwardConsensus:
+class TestEquivalencePrinciple:
 
-    def test_clear_approval_consensus(self):
-        """Both leader and validator observe rainfall well below threshold (drought approved)."""
-        lr = leader_result(rain=12.5)
-        assert validator_check(lr, my_rain=12.6) is True
+    def test_both_agree_verified(self):
+        """Both leader and validator generate the exact same verified audit proposal."""
+        metrics = [
+            {"metric_id": "uptime_check", "status": "PASS"},
+            {"metric_id": "cpu_check", "status": "PASS"},
+        ]
+        leader = make_mock_proposal("spec-1", "spec-digest-a", "telem-digest-a", "FINALIZED", metrics)
+        expected = make_mock_proposal("spec-1", "spec-digest-a", "telem-digest-a", "FINALIZED", metrics)
+        
+        assert validator_check(leader, expected) is True
 
-    def test_clear_rejection_consensus(self):
-        """Both observe rainfall well above threshold (no drought, claim rejected)."""
-        lr = leader_result(rain=75.0)
-        assert validator_check(lr, my_rain=74.9) is True
+    def test_both_agree_failed(self):
+        """Both agree on failing metrics."""
+        metrics = [
+            {"metric_id": "uptime_check", "status": "FAIL"},
+            {"metric_id": "cpu_check", "status": "PASS"},
+        ]
+        leader = make_mock_proposal("spec-1", "spec-digest-a", "telem-digest-a", "FINALIZED", metrics)
+        expected = make_mock_proposal("spec-1", "spec-digest-a", "telem-digest-a", "FINALIZED", metrics)
+        
+        assert validator_check(leader, expected) is True
 
-    def test_exact_threshold_consensus(self):
-        """Rain exactly at threshold — both agree it's rejected."""
-        lr = leader_result(rain=50.0)
-        assert validator_check(lr, my_rain=50.0) is True
-
-
-# ── Variance tolerance ────────────────────────────────────────────────────────
-
-class TestVarianceTolerance:
-    """Open-Meteo data can return slightly different floats between calls."""
-
-    def test_0_1_mm_variance_passes(self):
-        lr = leader_result(rain=25.0)
-        assert validator_check(lr, my_rain=24.9) is True
-        assert validator_check(lr, my_rain=25.1) is True
-
-    def test_0_2_mm_variance_passes(self):
-        lr = leader_result(rain=25.0)
-        assert validator_check(lr, my_rain=24.8) is True
-        assert validator_check(lr, my_rain=25.2) is True
-
-    def test_0_3_mm_variance_fails(self):
-        lr = leader_result(rain=25.0)
-        assert validator_check(lr, my_rain=24.7) is False
-        assert validator_check(lr, my_rain=25.3) is False
-
-
-# ── Near-threshold tolerance ──────────────────────────────────────────────────
-
-class TestNearThresholdTolerance:
-    """
-    When rain is within 0.5mm of threshold, the decision can legitimately
-    go either way. Validator should defer to leader to avoid consensus failure.
-    """
-
-    def test_validator_defers_when_leader_just_approved(self):
-        """Leader: 49.8mm (approved). Validator: 50.1mm (would reject). Near threshold → accept."""
-        lr = leader_result(rain=49.8, approved=True)
-        assert validator_check(lr, my_rain=50.1) is True
-
-    def test_validator_defers_when_leader_just_rejected(self):
-        """Leader: 50.2mm (rejected). Validator: 49.9mm (would approve). Near threshold → accept."""
-        lr = leader_result(rain=50.2, approved=False)
-        assert validator_check(lr, my_rain=49.9) is True
+    def test_mismatch_fails_consensus(self):
+        """If validator generates different metrics status, consensus is rejected."""
+        leader_metrics = [
+            {"metric_id": "uptime_check", "status": "PASS"},
+            {"metric_id": "cpu_check", "status": "PASS"},
+        ]
+        validator_metrics = [
+            {"metric_id": "uptime_check", "status": "UNRESOLVED"},
+            {"metric_id": "cpu_check", "status": "PASS"},
+        ]
+        
+        leader = make_mock_proposal("spec-1", "spec-digest-a", "telem-digest-a", "FINALIZED", leader_metrics)
+        expected = make_mock_proposal("spec-1", "spec-digest-a", "telem-digest-a", "FINALIZED", validator_metrics)
+        
+        assert validator_check(leader, expected) is False
